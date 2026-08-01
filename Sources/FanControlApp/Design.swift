@@ -364,6 +364,37 @@ struct LegendDot: View {
     }
 }
 
+/// Stands in for the fan cards when the machine reports no fans.
+///
+/// An empty space where fan speed should be reads as a broken app, and that is
+/// exactly how the first report of this arrived. Two very different things
+/// produce it — a passively cooled Mac, or fan keys named differently than the
+/// ones probed — and neither is something the user can guess at. Name both, and
+/// point at the command that tells them apart.
+struct NoFansCard: View {
+    var body: some View {
+        Card(padding: Metric.md, radius: Metric.radiusMd) {
+            HStack(spacing: Metric.sm) {
+                Image(systemName: "fanblades")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("No fans detected")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("Either this Mac is passively cooled, or its fan keys "
+                         + "differ from the ones probed. `fanctl doctor` says which.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
+}
+
 /// Section label — small, tracked-out, quiet.
 struct SectionLabel: View {
     var text: String

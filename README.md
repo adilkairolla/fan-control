@@ -98,8 +98,15 @@ fanctl set 4000          # pin a fixed RPM
 fanctl auto              # hand control back to macOS
 fanctl safety            # show the enforced floor
 fanctl version           # what's installed, and how to update it
+fanctl doctor            # why fan speed or control isn't working
 fanctl history 3600 > out.csv
 ```
+
+`doctor` is the one to run when the menu bar shows no fan speed, or a preset
+does nothing. It needs neither root nor the daemon — SMC reads are
+unprivileged — and reports the machine, what's installed, the fan keys it found
+with their types and current values, and a plain sentence about what that adds
+up to. Paste its output into an issue and there is nothing left to ask.
 
 ```
 $ fanctl status
@@ -190,9 +197,21 @@ rediscovered:
 - The request struct is 80 bytes and its integer fields are **native
   little-endian**. Marshalling them big-endian makes every call fail silently.
 - Data payloads are **big-endian for integers but little-endian for `flt `**.
-- The fan mode key is **`F0md`** — lowercase `d`. Every Intel-era sample uses
-  `F0Md`, which does not exist here.
-- Fan targets are `flt ` (IEEE float), not the `fpe2` fixed-point of older Macs.
+- The fan mode key is **`F0md`** — lowercase `d` — on this hardware. Every
+  Intel-era sample uses `F0Md`, which does not exist here. Both are probed,
+  because neither spelling is universal.
+- Fan targets are `flt ` (IEEE float) here, and `fpe2` fixed-point on older
+  Macs. Read the type the key declares rather than assuming one.
+- Type names are four-character codes, so short ones are space-padded: `ui8 `
+  and `flt `, but `fpe2` and `ui16`. Matching the padded string is a bug
+  waiting for whichever type you forget to pad.
+- **Nothing above is a property of "Apple Silicon" — it is a property of the
+  Mac it was measured on.** Fan keys must be resolved against the running
+  machine, and every one except `F<n>Ac` treated as optional. Demanding all
+  five made a single unrecognised key erase the fan from `readAll()` entirely:
+  fan speed vanished from the whole UI and the presets silently did nothing,
+  on hardware that was working fine. `fanctl doctor` exists so that failure
+  reports a key name instead of a blank space.
 - Writing `F0Tg` and reading it straight back returns the **old** value; the
   register is eventually consistent. Confirm control took effect by watching
   `F0Ac` converge instead.
@@ -207,9 +226,9 @@ make test
 ```
 
 Command Line Tools ship neither XCTest nor swift-testing, so the suite is a
-plain executable. 63 checks covering curve interpolation, the safety floor,
-hysteresis and slew limiting, profile stability, IPC round-trips, and live
-unprivileged SMC reads.
+plain executable. 98 checks covering curve interpolation, the safety floor,
+hysteresis and slew limiting, profile stability, IPC round-trips, lid
+detection, fan key resolution, and live unprivileged SMC reads.
 
 ## License
 

@@ -215,6 +215,9 @@ struct OverviewView: View {
     /// go greedy and fight the charts below for the window.
     private func heroRow(_ status: SystemStatus) -> some View {
         HStack(alignment: .top, spacing: Metric.sm) {
+            if status.fans.isEmpty {
+                NoFansCard().frame(maxHeight: .infinity)
+            }
             ForEach(status.fans) { fan in
                 heroFan(fan).frame(maxHeight: .infinity)
             }

@@ -402,6 +402,81 @@ suite("Lid state") {
     check(PowerState.lidIsClosed() == reported, "stable across consecutive reads")
 }
 
+// MARK: - Fan key resolution
+//
+// The bug this suite exists for: `read()` demanded five SMC keys, all with the
+// types this one Mac happens to use. On any Mac where one differed, `readAll()`
+// returned nothing — fan speed disappeared from the entire UI and the presets
+// silently did nothing, with no error anywhere. So the contract under test is
+// "one unrecognised key costs you that key, not the fan".
+
+suite("Fan key resolution") {
+    do {
+        let smc = try SMC()
+        let fans = try FanController(smc: smc)
+
+        // Names are looked up, not assumed. The mode key is the one that is
+        // genuinely known to differ between Macs.
+        check(FanController.FanKeys.candidates(.mode, fan: 0) == ["F0md", "F0Md"],
+              "both spellings of the mode key are tried")
+        check(FanController.FanKeys.candidates(.actual, fan: 1) == ["F1Ac"],
+              "candidate names are per-fan")
+
+        check(fans.fanCount == fans.fanKeys.count, "one key set per fan")
+
+        for keys in fans.fanKeys {
+            check(keys.actual != nil, "fan \(keys.index): found \(keys.actual ?? "no") RPM key")
+            check(keys.resolved(.mode) == keys.mode, "fan \(keys.index): resolved(_:) matches")
+        }
+
+        // Every key a probe claims to have found must actually read back.
+        for index in 0..<fans.fanCount {
+            let probes = fans.probe(index)
+            check(probes.count == FanController.FanKeys.Role.allCases.count,
+                  "fan \(index): probed all \(probes.count) roles")
+            check(probes.allSatisfy { !$0.exists || $0.error == nil },
+                  "fan \(index): every key found also reads")
+        }
+
+        // The four numeric encodings go through one accessor now, and the
+        // trailing space in a padded four-character type name has to survive
+        // it — `ui8 ` is not `ui8`, and matching the padded form once already
+        // made every mode-key read fail.
+        if let mode = fans.fanKeys.first?.mode {
+            check((try? smc.readNumber(mode)) != nil,
+                  "readNumber handles '\((try? smc.keyInfo(mode))?.type ?? "?")' (\(mode))")
+        }
+        if let actual = fans.fanKeys.first?.actual {
+            let viaNumber = try? smc.readNumber(actual)
+            check(viaNumber != nil && viaNumber! > 0,
+                  "readNumber handles '\((try? smc.keyInfo(actual))?.type ?? "?")' (\(actual))")
+        }
+        // And it refuses what it cannot decode, rather than returning a number
+        // built out of whatever bytes happened to be there.
+        let numeric: Set<String> = ["flt", "fpe2", "ui8", "ui16", "ui32"]
+        let nonNumeric = ((try? smc.allKeys()) ?? []).first { key in
+            guard let type = try? smc.keyInfo(key).type else { return false }
+            return !numeric.contains(type.trimmingCharacters(in: .whitespaces))
+        }
+        if let nonNumeric {
+            check((try? smc.readNumber(nonNumeric)) == nil,
+                  "readNumber refuses '\((try? smc.keyInfo(nonNumeric))?.type ?? "?")' (\(nonNumeric))")
+        }
+
+        // A range is reported or it is nil — never a fabricated 0...0, which
+        // would clamp every command to a standstill.
+        for index in 0..<fans.fanCount {
+            if let range = fans.range(index) {
+                check(range.upperBound > range.lowerBound, "fan \(index): range is non-degenerate")
+            }
+        }
+
+        check(fans.controllableFanCount <= fans.fanCount, "controllable never exceeds found")
+    } catch {
+        print("  – skipped (no SMC access: \(error))")
+    }
+}
+
 // MARK: - Summary
 
 print("\n\(checks - failures)/\(checks) checks passed")

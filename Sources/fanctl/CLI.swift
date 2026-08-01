@@ -18,6 +18,7 @@ enum CLI {
       fanctl safety                  show the enforced safety floor
       fanctl history [seconds]       dump recorded history as CSV (default 3600)
       fanctl version                 what is installed, and how to update it
+      fanctl doctor                  why fan speed or control is not working
 
     GROUPS
       \(SensorGroup.allCases.map(\.rawValue).joined(separator: ", "))
@@ -45,6 +46,7 @@ enum CLI {
             case "safety":   return try showSafety(client)
             case "history":  return try dumpHistory(client, seconds: Int(rest.first ?? "") ?? 3600)
             case "version", "--version", "-v": return showVersion()
+            case "doctor":   return doctor(client)
             case "-h", "--help", "help":
                 print(usage)
                 return 0
@@ -235,6 +237,119 @@ enum CLI {
             print("    \(BuildInfo.bootstrapCommand)")
         }
         return 0
+    }
+
+    /// Everything needed to explain "no fan speed, and the presets do nothing"
+    /// in one paste, without a round trip asking for more.
+    ///
+    /// Deliberately does not need the daemon. SMC *reads* work unprivileged, so
+    /// this still answers on a machine where the helper never installed — and
+    /// telling that apart from unrecognised fan keys is most of its job.
+    private static func doctor(_ client: FanControlClient) -> Int32 {
+        let daemonUp = (try? client.send(Request(cmd: .ping)))?.ok == true
+
+        print("\n  MACHINE")
+        print("    model          \(sysctlString("hw.model") ?? "unknown")")
+        print("    chip           \(sysctlString("machdep.cpu.brand_string") ?? "unknown")")
+        print("    macOS          \(ProcessInfo.processInfo.operatingSystemVersionString)")
+
+        print("\n  INSTALL")
+        print("    helper         \(BuildInfo.installed()?.short ?? "no version file")")
+        print("    app            \(BuildInfo.app()?.short ?? "not installed")")
+        print("    daemon         \(daemonUp ? "running and answering" : "not answering on \(IPC.socketPath)")")
+
+        let smc: SMC
+        do {
+            smc = try SMC()
+        } catch {
+            print("\n  SMC\n    cannot open AppleSMC: \(error)")
+            print("\n  Nothing further can be checked without it.\n")
+            return 1
+        }
+
+        guard let fans = try? FanController(smc: smc) else {
+            print("\n  SMC\n    could not enumerate fans\n")
+            return 1
+        }
+
+        print("\n  FANS")
+        print("    FNum           \(fans.declaredFanCount.map(String.init) ?? "absent — probed F0Ac… instead")")
+        print("    found          \(fans.fanCount)")
+        print("    controllable   \(fans.controllableFanCount)")
+
+        for index in 0..<fans.fanCount {
+            print("\n    fan \(index)")
+            for probe in fans.probe(index) {
+                let type  = probe.type.map { "'\($0)'" } ?? "—"
+                let value = probe.value.map(fmt) ?? "—"
+                let note  = probe.error.map { "   \($0)" } ?? ""
+                print("      \(pad(probe.role, 8)) \(pad(probe.key, 20)) "
+                      + "\(pad(type, 8)) \(pad(value, 9))\(note)")
+            }
+        }
+
+        // Only when something is actually wrong: enumerating ~3700 keys is slow,
+        // and it is only useful when the names above did not match.
+        if fans.controllableFanCount < max(fans.fanCount, 1) {
+            print("\n  EVERY SMC KEY STARTING WITH 'F'")
+            let keys = ((try? smc.allKeys()) ?? [])
+                .filter { $0.hasPrefix("F") }
+                .sorted()
+            if keys.isEmpty {
+                print("    none")
+            }
+            for row in stride(from: 0, to: keys.count, by: 4) {
+                let cells = keys[row..<min(row + 4, keys.count)].map { key in
+                    pad("\(key) \((try? smc.keyInfo(key)).map { "'\($0.type)'" } ?? "?")", 16)
+                }
+                print("    " + cells.joined(separator: " "))
+            }
+        }
+
+        print("\n  VERDICT")
+        if fans.fanCount == 0 {
+            print("""
+                No fans were found. On a MacBook Air that is correct — it is
+                passively cooled, so there is nothing to control and monitoring
+                is all this can offer. On any Mac that does have fans, the keys
+                listed above are named something not tried yet; please open an
+                issue with this output.
+            """)
+        } else if fans.controllableFanCount == 0 {
+            print("""
+                The fans are readable but not controllable: the target or mode
+                key is missing under every name tried. Speeds and temperatures
+                will display, presets will not do anything. Please open an issue
+                with the key list above — adding the right name is a one-line
+                fix.
+            """)
+        } else if !daemonUp {
+            print("""
+                The fans are readable and controllable, but the helper is not
+                running, so nothing is driving them. Monitoring works; control
+                needs the daemon:
+
+                  make -C ~/.fan-control up
+
+                Then check /var/log/fancontrol.log if it still does not answer.
+            """)
+        } else {
+            print("""
+                Fans readable, fans controllable, helper answering. If a preset
+                still does nothing, /var/log/fancontrol.log has the daemon's own
+                account of each tick.
+            """)
+        }
+        print("")
+        return 0
+    }
+
+    private static func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buffer)
     }
 
     private static func dumpHistory(_ client: FanControlClient, seconds: Int) throws -> Int32 {

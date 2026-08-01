@@ -247,4 +247,72 @@ public final class SMC {
         guard b.count >= 4 else { throw SMCError.sizeMismatch(key: key, expected: 4, got: b.count) }
         return UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
     }
+
+    // MARK: - Type-agnostic numbers
+    //
+    // The same key is not the same type on every Mac. Fan RPM is `flt ` on this
+    // hardware and `fpe2` — 14 integer bits then 2 fractional, big-endian — on
+    // Intel and older Apple Silicon. Reading one through a `flt `-only accessor
+    // throws `typeMismatch` on a machine whose fans are working perfectly well,
+    // so ask the key what it is instead of assuming.
+
+    /// Type names are four-character codes, so the short ones carry trailing
+    /// spaces: `ui8 ` and `flt `, but `fpe2` and `ui16`. Matching the padded
+    /// form is a bug waiting for whichever type you forgot to pad.
+    private static func typeName(_ type: String) -> String {
+        type.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Reads any of the numeric SMC encodings as a `Double`.
+    public func readNumber(_ key: String) throws -> Double {
+        let info = try keyInfo(key)
+        let b = try readBytes(key)
+
+        func need(_ n: Int) throws {
+            guard b.count >= n else {
+                throw SMCError.sizeMismatch(key: key, expected: n, got: b.count)
+            }
+        }
+
+        switch Self.typeName(info.type) {
+        case "flt":
+            try need(4)
+            let bits = UInt32(b[3]) << 24 | UInt32(b[2]) << 16 | UInt32(b[1]) << 8 | UInt32(b[0])
+            return Double(Float(bitPattern: bits))
+        case "fpe2":
+            try need(2)
+            return Double(UInt16(b[0]) << 8 | UInt16(b[1])) / 4
+        case "ui8":
+            try need(1)
+            return Double(b[0])
+        case "ui16":
+            try need(2)
+            return Double(UInt16(b[0]) << 8 | UInt16(b[1]))
+        case "ui32":
+            try need(4)
+            return Double(UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3]))
+        default:
+            throw SMCError.typeMismatch(key: key, expected: "a numeric type", got: info.type)
+        }
+    }
+
+    /// Writes a `Double` back in whichever encoding the key declares.
+    public func writeNumber(_ key: String, _ value: Double) throws {
+        let info = try keyInfo(key)
+
+        func be16(_ scaled: Double) -> [UInt8] {
+            let raw = UInt16(max(0, min(Double(UInt16.max), scaled.rounded())))
+            return [UInt8(raw >> 8), UInt8(raw & 0xff)]
+        }
+
+        switch Self.typeName(info.type) {
+        case "flt":   try writeFloat(key, Float(value))
+        case "fpe2":  try writeBytes(key, be16(value * 4))
+        case "ui16":  try writeBytes(key, be16(value))
+        case "ui8":   try writeUInt8(key, UInt8(max(0, min(255, value.rounded()))))
+        default:
+            throw SMCError.typeMismatch(key: key, expected: "a writable numeric type",
+                                        got: info.type)
+        }
+    }
 }

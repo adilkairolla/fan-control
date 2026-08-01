@@ -68,6 +68,15 @@ final class Daemon {
     private let tickInterval: TimeInterval = 1.0
     private let historyInterval: TimeInterval = 5.0
 
+    /// Stand-in for a fan that does not advertise `F<n>Mn`/`F<n>Mx`.
+    ///
+    /// Curves and the safety floor are both expressed against a range, so a
+    /// fan without one still needs numbers. Skipping it instead would be worse
+    /// than a rough guess: manual mode is already engaged by then, so a fan
+    /// that never gets commanded holds whatever target it last had. The SMC
+    /// clamps anything outside the real range anyway.
+    private static let assumedRange: ClosedRange<Double> = 1200...7000
+
     init() throws {
         smc = try SMC()
         sensors = SensorReader(smc: smc)
@@ -86,6 +95,20 @@ final class Daemon {
         lastSafetyEngaged = Array(repeating: false, count: fans.fanCount)
 
         log("SMC ready — \(fans.fanCount) fans, \(sensors.discoveredKeyCount) temperature sensors")
+
+        // Say which keys were actually found. When fan control does nothing on
+        // hardware this was not developed on, the reason is almost always a key
+        // that is named or typed differently here, and the log is where someone
+        // will look first.
+        if fans.fanCount == 0 {
+            log("warning: no fans found (FNum=\(fans.declaredFanCount.map(String.init) ?? "absent")) "
+                + "— monitoring only. `fanctl doctor` explains what was probed")
+        }
+        for keys in fans.fanKeys where !fans.isControllable(keys.index) {
+            log("warning: fan \(keys.index) is readable but not controllable — "
+                + "target=\(keys.target ?? "absent"), mode=\(keys.mode ?? "absent"). "
+                + "Run `fanctl doctor`")
+        }
     }
 
     // MARK: - Lifecycle
@@ -165,7 +188,7 @@ final class Daemon {
         case .fixed:
             try? fans.engageManualControl()
             for i in 0..<fans.fanCount {
-                guard let range = try? fans.range(i) else { continue }
+                let range = fans.range(i) ?? Self.assumedRange
                 let requested = i < fixed.count ? fixed[i] : range.lowerBound
                 // The floor still applies to a pinned RPM — that is the point of it.
                 let floor = safety.floorRPM(dieCelsius: die, range: range)
@@ -183,8 +206,8 @@ final class Daemon {
             }
             try? fans.engageManualControl()
             for i in 0..<fans.fanCount {
-                guard let curve = profile.curve(forFan: i),
-                      let range = try? fans.range(i) else { continue }
+                guard let curve = profile.curve(forFan: i) else { continue }
+                let range = fans.range(i) ?? Self.assumedRange
                 let input = maxima[curve.input] ?? die
                 let result = evaluators[i].evaluate(curve: curve,
                                                     inputCelsius: input,
@@ -291,7 +314,7 @@ final class Daemon {
     // MARK: - Profiles
 
     private func allProfilesLocked() -> [Profile] {
-        let range = (try? fans.range(0)) ?? 2000...7000
+        let range = fans.range(0) ?? Self.assumedRange
         return Profile.builtins(range: range) + config.userProfiles
     }
 

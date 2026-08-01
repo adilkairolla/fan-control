@@ -90,8 +90,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let temperature = status.cpuTemperature
-        let rpm = status.averageFanRPM
-        let title = String(format: " %.0f°  %.1fk", temperature, rpm / 1000)
+
+        // A machine with no fans shows the temperature alone. Printing "0.0k"
+        // would be a reading, and there is no reading to give.
+        let title = status.fans.isEmpty
+            ? String(format: " %.0f°", temperature)
+            : String(format: " %.0f°  %.1fk", temperature, status.averageFanRPM / 1000)
 
         var attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
@@ -105,7 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.attributedTitle = NSAttributedString(string: title, attributes: attributes)
         button.toolTip = """
             CPU \(String(format: "%.1f", temperature))°C · GPU \(String(format: "%.1f", status.gpuTemperature))°C
-            Fans \(status.fans.map { "\(Int($0.info.actualRPM))" }.joined(separator: " / ")) RPM
+            Fans \(status.fans.isEmpty ? "none detected — run fanctl doctor"
+                   : status.fans.map { "\(Int($0.info.actualRPM))" }.joined(separator: " / ") + " RPM")
             Mode: \(status.controlMode.displayName)\(status.activeProfileName.map { " · \($0)" } ?? "")
             """
     }

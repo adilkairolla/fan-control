@@ -86,10 +86,15 @@ struct MenuBarView: View {
 
     // MARK: - Fans
 
+    @ViewBuilder
     private func fans(_ status: SystemStatus) -> some View {
-        HStack(spacing: Metric.sm) {
-            ForEach(status.fans) { fan in
-                fanCard(fan)
+        if status.fans.isEmpty {
+            NoFansCard()
+        } else {
+            HStack(spacing: Metric.sm) {
+                ForEach(status.fans) { fan in
+                    fanCard(fan)
+                }
             }
         }
     }
@@ -219,9 +224,12 @@ struct MenuBarView: View {
 
     // MARK: - Controls
 
+    /// Hidden when there is nothing to drive. Presets that visibly do nothing
+    /// are worse than absent ones — that is what the first bug report described
+    /// — and the card above has already explained the absence.
     @ViewBuilder
     private func controls(_ status: SystemStatus) -> some View {
-        if model.canControl {
+        if model.canControl && !status.fans.isEmpty {
             VStack(alignment: .leading, spacing: Metric.sm) {
                 HStack {
                     SectionLabel(text: "Mode", symbol: "slider.horizontal.3")
