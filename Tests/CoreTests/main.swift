@@ -217,6 +217,81 @@ suite("IPC round-trip") {
     }
 }
 
+// MARK: - Build provenance
+//
+// The version a build reports is produced by shell and consumed by Swift, so
+// nothing in the compiler connects the two. Drift is silent and it fails in the
+// worst way: `fanctl version` reports "not installed" for a daemon that is
+// running, and the app's Update button loses the checkout it was built from.
+// These checks are the join.
+
+suite("Build provenance") {
+    let sample = """
+        {
+          "version": "0.1.0",
+          "commit": "a1b2c3d4e",
+          "date": "2026-08-02",
+          "sourceRoot": "/Users/someone/.fan-control"
+        }
+        """
+    if let info = try? JSONDecoder().decode(BuildInfo.self, from: Data(sample.utf8)) {
+        check(info.version == "0.1.0" && info.commit == "a1b2c3d4e"
+              && info.sourceRoot == "/Users/someone/.fan-control",
+              "the JSON install.sh writes decodes into BuildInfo")
+        check(info.short == "0.1.0 (a1b2c3d4e)", "short form names the commit")
+    } else {
+        check(false, "version.json decodes")
+    }
+
+    check(BuildInfo(version: "0.1.0", commit: "unknown", date: "unknown",
+                    sourceRoot: "").short == "0.1.0",
+          "a build from outside a checkout claims no commit")
+
+    // CoreTests is a bare executable with no Info.plist — the app-bundle path
+    // has to degrade to nil rather than trap.
+    check(BuildInfo.bundled() == nil, "bundle lookup returns nil without a bundle")
+    check(BuildInfo.app(at: "/Applications/Nothing.app") == nil,
+          "a missing app bundle reports no version")
+
+    // Source-level contract. Skipped if the tests were built somewhere the
+    // repository no longer sits.
+    let repo = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()    // Tests/CoreTests
+        .deletingLastPathComponent()    // Tests
+        .deletingLastPathComponent()    // repository root
+    let scripts = repo.appendingPathComponent("scripts")
+
+    if let install = try? String(contentsOf: scripts.appendingPathComponent("install.sh"),
+                                 encoding: .utf8),
+       let buildApp = try? String(contentsOf: scripts.appendingPathComponent("build-app.sh"),
+                                  encoding: .utf8) {
+        let directory = (BuildInfo.installedPath as NSString).deletingLastPathComponent
+        let file = (BuildInfo.installedPath as NSString).lastPathComponent
+        check(install.contains("SUPPORT=\"\(directory)\""),
+              "install.sh writes into \(directory)")
+        check(install.contains("$SUPPORT/\(file)"), "install.sh writes \(file)")
+        check(install.contains("\"version\"") && install.contains("\"commit\"")
+              && install.contains("\"date\"") && install.contains("\"sourceRoot\""),
+              "install.sh emits every field BuildInfo decodes")
+
+        for key in ["CFBundleShortVersionString", "FCSourceCommit", "FCSourceDate", "FCSourceRoot"] {
+            check(buildApp.contains(key), "build-app.sh stamps \(key)")
+        }
+
+        check(FileManager.default.isExecutableFile(
+                atPath: scripts.appendingPathComponent("update.sh").path),
+              "update.sh is executable")
+        check(BuildInfo.updateScript(sourceRoot: repo.path) != nil,
+              "the updater is discoverable from a source root")
+        check(BuildInfo.updateScript(sourceRoot: "/nonexistent") == nil
+              || FileManager.default.isExecutableFile(
+                    atPath: NSHomeDirectory() + "/.fan-control/scripts/update.sh"),
+              "a bogus source root falls back to ~/.fan-control or nothing")
+    } else {
+        print("  – repository not at #filePath, source contract checks skipped")
+    }
+}
+
 // MARK: - Live hardware (read-only, skipped if unavailable)
 
 suite("Live SMC reads") {

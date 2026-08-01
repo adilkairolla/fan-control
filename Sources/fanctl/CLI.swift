@@ -17,6 +17,7 @@ enum CLI {
       fanctl curve [name]            show a profile's curve points
       fanctl safety                  show the enforced safety floor
       fanctl history [seconds]       dump recorded history as CSV (default 3600)
+      fanctl version                 what is installed, and how to update it
 
     GROUPS
       \(SensorGroup.allCases.map(\.rawValue).joined(separator: ", "))
@@ -43,6 +44,7 @@ enum CLI {
             case "curve":    return try showCurve(client, name: rest.first)
             case "safety":   return try showSafety(client)
             case "history":  return try dumpHistory(client, seconds: Int(rest.first ?? "") ?? 3600)
+            case "version", "--version", "-v": return showVersion()
             case "-h", "--help", "help":
                 print(usage)
                 return 0
@@ -198,6 +200,40 @@ enum CLI {
             print("  \(pad(fmt(point.celsius), 6))°C → minimum \(Int(point.rpm * 100))% of fan range")
         }
         print("\n  critical: \(fmt(safety.criticalCelsius))°C → 100%")
+        return 0
+    }
+
+    /// Reports the two halves separately rather than printing one number.
+    /// They are installed by different scripts and can genuinely diverge — an
+    /// app rebuilt while the helper stayed behind is a real state, and one you
+    /// cannot diagnose if the tool insists there is only one version.
+    private static func showVersion() -> Int32 {
+        let helper = BuildInfo.installed()
+        let app = BuildInfo.app()
+
+        // A helper binary with no version file is not an absent helper — it is
+        // one installed before this existed. Saying "not installed" about a
+        // daemon that is currently driving the fans would be a lie.
+        let helperLabel = helper?.short
+            ?? (FileManager.default.isExecutableFile(atPath: BuildInfo.helperPath)
+                ? "unknown — installed before version tracking"
+                : "not installed")
+
+        print("  helper  \(helperLabel)\(helper.map { "   \($0.date)" } ?? "")")
+        print("  app     \(app?.short ?? "not installed")\(app.map { "   \($0.date)" } ?? "")")
+
+        if let helper, let app, helper.commit != app.commit {
+            print("\n  ! these were built from different commits — `make up` reconciles them")
+        }
+
+        let root = helper?.sourceRoot ?? app?.sourceRoot
+        print("\n  update")
+        if let script = BuildInfo.updateScript(sourceRoot: root) {
+            print("    \(script)          pull and reinstall")
+            print("    \(script) --check  see what would change")
+        } else {
+            print("    \(BuildInfo.bootstrapCommand)")
+        }
         return 0
     }
 

@@ -28,6 +28,34 @@ third-party packages.
 **Uninstall:** `make down` stops everything and hands the fans back to macOS.
 `make uninstall` also removes it from disk.
 
+## Updating
+
+An update is a fast-forward of the source and a rebuild of whatever changed.
+Three ways in, all doing the same thing:
+
+- **In the app** — the ⬇ button in the menu bar popover. It opens Terminal, so
+  you can watch the build and answer the password prompt if the helper changed.
+  The app never contacts the network on its own; `git` does the checking, when
+  you ask.
+- **From the checkout** — `make update`, or `make update-check` to see what a
+  pull would bring without applying it.
+- **From nothing** — re-run the install one-liner. It updates an existing
+  `~/.fan-control` rather than replacing it.
+
+Only fast-forwards. Local commits or uncommitted edits stop the update with an
+explanation rather than being merged, stashed or discarded on your behalf.
+
+```
+$ fanctl version
+  helper  0.1.0 (47f3d8079)   2026-08-01
+  app     0.1.0 (47f3d8079)   2026-08-01
+```
+
+The two halves are installed by different scripts and reported separately
+because they can genuinely drift — an app rebuilt while the helper stayed
+behind is a real state, and one you cannot diagnose if the tool insists there
+is only one version. `make up` reconciles them.
+
 ## What it does
 
 - **Monitors** ~320 temperature sensors, both fans, CPU/memory/battery and
@@ -41,8 +69,8 @@ third-party packages.
 
 ### Menu bar
 
-Live temperature and fan speed in the bar; click for the full picture and
-one-tap profiles.
+Live temperature and fan speed in the bar; click for the full picture. Built-in
+profiles and your own custom curves are both one click away.
 
 <img src="docs/menubar.png" width="360" alt="Menu bar popover">
 
@@ -69,6 +97,7 @@ fanctl profile Silent    # activate a curve
 fanctl set 4000          # pin a fixed RPM
 fanctl auto              # hand control back to macOS
 fanctl safety            # show the enforced floor
+fanctl version           # what's installed, and how to update it
 fanctl history 3600 > out.csv
 ```
 

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := up
 
-.PHONY: up down build app run test install helper uninstall clean status watch
+.PHONY: up down update update-check build app run test install helper uninstall clean status watch version
 
 # ── The one command ──────────────────────────────────────────────────────
 # Builds everything, installs the helper if it is missing or stale, installs
@@ -12,6 +12,14 @@ up:
 # Stop everything and remove the login item. Fans go back to macOS.
 down:
 	@./scripts/down.sh
+
+# Pull the latest source and reinstall whatever changed.
+update:
+	@./scripts/update.sh
+
+# Say what an update would bring, without applying it.
+update-check:
+	@./scripts/update.sh --check
 
 # ── Pieces, if you want them individually ────────────────────────────────
 
@@ -49,6 +57,9 @@ uninstall:
 	-./scripts/down.sh
 	rm -rf /Applications/FanControl.app
 	sudo ./scripts/uninstall.sh
+
+version:
+	@fanctl version 2>/dev/null || swift run fanctl version
 
 status:
 	@fanctl status 2>/dev/null || swift run fanctl status

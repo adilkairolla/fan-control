@@ -10,6 +10,7 @@ struct CurveEditorView: View {
     @State private var dirty = false
     @State private var draggingIndex: Int?
     @State private var saveError: String?
+    @State private var pendingDeletion: Profile?
 
     private var fanRange: ClosedRange<Double> {
         guard let info = model.status?.fans.first?.info, info.maxRPM > info.minRPM else {
@@ -34,8 +35,22 @@ struct CurveEditorView: View {
             }
         }
         .onAppear(perform: selectActiveProfile)
-        .onChange(of: model.profiles.count) { _, _ in
-            if draft == nil { selectActiveProfile() }
+        .onChange(of: model.profiles.map(\.id)) { _, ids in
+            reconcileSelection(with: ids)
+        }
+        .confirmationDialog(
+            pendingDeletion.map { "Delete “\($0.name)”?" } ?? "",
+            isPresented: Binding(get: { pendingDeletion != nil },
+                                 set: { if !$0 { pendingDeletion = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { profile in
+            Button("Delete", role: .destructive) { delete(profile) }
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+        } message: { profile in
+            Text(isDriving(profile)
+                 ? "This curve is driving the fans right now. Deleting it hands them back to macOS."
+                 : "A curve cannot be recovered once deleted.")
         }
     }
 
@@ -128,8 +143,7 @@ struct CurveEditorView: View {
 
     private func profileRow(_ profile: Profile) -> some View {
         let selected = selectedID == profile.id
-        let active = model.status?.activeProfileName == profile.name
-                  && model.status?.controlMode == .curve
+        let active = isDriving(profile)
 
         return Button {
             selectedID = profile.id
@@ -166,6 +180,15 @@ struct CurveEditorView: View {
             }
         }
         .buttonStyle(.plain)
+        // Deleting from the row is what people reach for first; the trash in
+        // the editor header requires opening the thing you want gone.
+        .contextMenu {
+            Button("Apply") { model.applyProfile(profile.name) }
+            if !profile.isBuiltin {
+                Divider()
+                Button("Delete…", role: .destructive) { pendingDeletion = profile }
+            }
+        }
     }
 
     // MARK: - Editor
@@ -236,9 +259,7 @@ struct CurveEditorView: View {
 
             if !profile.isBuiltin {
                 Button(role: .destructive) {
-                    model.deleteProfile(profile.id)
-                    draft = nil
-                    selectedID = nil
+                    pendingDeletion = profile
                 } label: {
                     Image(systemName: "trash").font(.system(size: 11))
                 }
@@ -490,6 +511,54 @@ struct CurveEditorView: View {
             suffix += 1
         }
         return candidate
+    }
+
+    private func isDriving(_ profile: Profile) -> Bool {
+        model.status?.controlMode == .curve
+            && model.status?.activeProfileName == profile.name
+    }
+
+    /// Deletion moves the selection the way a list should: onto whatever now
+    /// occupies the deleted row, or the last one if you deleted the bottom.
+    ///
+    /// The old flow blanked the editor and left the row in place until the next
+    /// slow poll, so nothing on screen said the profile was gone — you had to
+    /// click away and back for the list to catch up. Now the row goes at once
+    /// (`StatusModel.deleteProfile` drops it optimistically) and the editor
+    /// lands on a neighbour instead of an empty state.
+    private func delete(_ profile: Profile) {
+        pendingDeletion = nil
+        saveError = nil
+
+        // Computed before the delete, so the index still means something.
+        let custom = model.profiles.filter { !$0.isBuiltin }
+        let position = custom.firstIndex { $0.id == profile.id }
+        let remaining = custom.filter { $0.id != profile.id }
+        let replacement = position.flatMap { index in
+            remaining.isEmpty ? nil : remaining[min(index, remaining.count - 1)]
+        } ?? model.profiles.first { $0.id != profile.id }
+
+        model.deleteProfile(profile.id)
+
+        selectedID = replacement?.id
+        draft = replacement
+        dirty = false
+    }
+
+    /// Keeps the editor honest when the list changes underneath it — a delete
+    /// confirmed here, or one done from `fanctl` while the window is open.
+    /// Without this the pane keeps rendering a profile that no longer exists.
+    private func reconcileSelection(with ids: [UUID]) {
+        guard let current = selectedID else {
+            selectActiveProfile()
+            return
+        }
+        // Unsaved edits outrank tidiness: leave the draft be and let Save
+        // re-create it under a fresh id.
+        guard !ids.contains(current), !dirty else { return }
+        draft = nil
+        selectedID = nil
+        selectActiveProfile()
     }
 
     private func selectActiveProfile() {

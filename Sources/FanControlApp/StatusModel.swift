@@ -76,9 +76,16 @@ final class StatusModel: ObservableObject {
 
     // MARK: - Polling
 
-    private func poll() {
+    /// - Parameter includeProfiles: fetch the profile list on this poll even if
+    ///   it isn't a slow tick. History is the expensive query — up to a week of
+    ///   samples — so it stays on the 15s cadence, but the profile list is a few
+    ///   hundred bytes and has to be correct the instant a mutation lands. Left
+    ///   on the slow cadence, a deleted curve kept its row for up to fifteen
+    ///   seconds, which read as the delete having failed.
+    private func poll(includeProfiles: Bool = false) {
         tick += 1
         let wantHistory = (tick % 15 == 1)
+        let wantProfiles = includeProfiles || wantHistory
         let seconds = historyWindow.seconds
 
         queue.async { [weak self] in
@@ -88,7 +95,7 @@ final class StatusModel: ObservableObject {
             // Prefer the daemon: it is authoritative and has real history.
             if let response = try? client.send(Request(cmd: .status)),
                let status = response.status {
-                let profiles = wantHistory
+                let profiles = wantProfiles
                     ? (try? client.send(Request(cmd: .listProfiles)))?.profiles
                     : nil
                 let history = wantHistory
@@ -145,11 +152,23 @@ final class StatusModel: ObservableObject {
         sendControl(Request(cmd: .applyProfile, profileName: name))
     }
 
+    /// Both mutations below update `profiles` before the daemon has answered.
+    ///
+    /// A socket round trip plus a poll is the better part of a second, and a UI
+    /// that does nothing for that long reads as broken rather than busy. The
+    /// forced refresh in `sendControl` is authoritative and puts things back if
+    /// the daemon refused — built-ins, for instance, cannot be overwritten.
     func saveProfile(_ profile: Profile) {
+        if let existing = profiles.firstIndex(where: { $0.id == profile.id }) {
+            profiles[existing] = profile
+        } else {
+            profiles.append(profile)
+        }
         sendControl(Request(cmd: .saveProfile, profile: profile))
     }
 
     func deleteProfile(_ id: UUID) {
+        profiles.removeAll { $0.id == id }
         sendControl(Request(cmd: .deleteProfile, profileID: id))
     }
 
@@ -160,7 +179,7 @@ final class StatusModel: ObservableObject {
     private func sendControl(_ request: Request) {
         queue.async { [weak self] in
             _ = try? FanControlClient().send(request)
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in self?.poll(includeProfiles: true) }
         }
     }
 }

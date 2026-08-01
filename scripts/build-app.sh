@@ -10,7 +10,9 @@ cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-release}"
 APP_NAME="FanControl"
 BUNDLE_ID="com.fancontrol.app"
-VERSION="0.1.0"
+
+# shellcheck source=version.sh
+. "$(dirname "$0")/version.sh"
 
 echo "==> Building ($CONFIG)"
 swift build -c "$CONFIG"
@@ -35,7 +37,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key>        <string>${APP_NAME}</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-    <key>CFBundleVersion</key>           <string>${VERSION}</string>
+    <key>CFBundleVersion</key>           <string>${BUILD_NUMBER}</string>
+    <!-- Provenance, not decoration: the app's Update button needs to find the
+         checkout it was built from, and nothing is baked into the binary
+         because a generated source file would leave the tree permanently
+         dirty and block the fast-forward that an update is. -->
+    <key>FCSourceCommit</key>            <string>${COMMIT}</string>
+    <key>FCSourceDate</key>              <string>${COMMIT_DATE}</string>
+    <key>FCSourceRoot</key>              <string>${SOURCE_ROOT}</string>
     <key>LSMinimumSystemVersion</key>    <string>14.0</string>
     <key>NSHighResolutionCapable</key>   <true/>
     <!-- Menu bar agent: no Dock icon, no app switcher entry. -->
@@ -52,6 +61,6 @@ codesign --force --deep --sign - "$APP_DIR" 2>/dev/null \
     || echo "    (codesign unavailable — the app will still run)"
 
 echo
-echo "Built $APP_DIR"
+echo "Built $APP_DIR  ($VERSION, $COMMIT)"
 echo "Run it with:  open $APP_DIR"
 echo "Install to /Applications:  cp -R $APP_DIR /Applications/"
