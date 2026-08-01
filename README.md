@@ -163,8 +163,20 @@ commanded = max(user_curve(temp), safety_floor(die_temp))
 so a curve can only ever spin fans *faster* than the floor. The floor is not
 slew-limited: it responds instantly while user curves ramp.
 
-**Sleep/wake.** Fans are handed back before sleep and the curve re-engages on
-wake, via `IORegisterForSystemPower`.
+**The machine sleeps, or the lid shuts.** Both hand the fans back to macOS, and
+— this is the part that matters — *latch* them there. macOS takes about five
+seconds between the `IORegisterForSystemPower` sleep notification and the SoC
+actually going down, and the control loop runs at 1 Hz, so a hand-back that
+simply wrote the SMC and returned got re-armed five times over before the
+machine went under. It slept with the fans pinned to the curve's last target,
+and since the SMC has no deadman they kept spinning inside a closed bag. The
+hand-back now runs *on the control loop's own queue*, so no tick can undo it.
+
+The lid rule stands on its own: with the lid shut, the fans are Apple's. That
+also covers the wakes nobody sees — macOS wakes a sleeping Mac every twenty
+minutes or so for maintenance, and without it the curve would spin the fans up
+on each one. The cost is that a Mac used in clamshell on an external display
+gets Apple's fan control rather than yours; temperatures stay live either way.
 
 The floor keys off `max(CPU, GPU)` die temperature, deliberately **not** the
 `Tf*` hotspot group — on this hardware those read 93–95 °C under ordinary heavy

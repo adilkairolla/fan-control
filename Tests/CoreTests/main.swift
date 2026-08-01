@@ -363,6 +363,45 @@ suite("LocalMonitor (no daemon, no root)") {
     }
 }
 
+// MARK: - Power state
+
+suite("Lid state") {
+    // Cross-check against the registry rather than asserting a fixed value:
+    // whether the lid is open depends on how the tests are being run, and a
+    // test that assumed "open" would fail over SSH for the wrong reason.
+    func clamshellPerIoreg() -> Bool? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/ioreg")
+        process.arguments = ["-n", "IOPMrootDomain", "-r", "-d", "1"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let line = text.split(separator: "\n").first(where: {
+            $0.contains("\"AppleClamshellState\"")
+        }) else { return nil }
+        return line.contains("Yes")
+    }
+
+    let reported = PowerState.lidIsClosed()
+    let registry = clamshellPerIoreg()
+
+    check(reported == registry,
+          "lidIsClosed() agrees with IOPMrootDomain (reported \(reported.map(String.init(describing:)) ?? "nil"))")
+
+    // The daemon treats only an explicit `true` as a reason to stop driving the
+    // fans, so a desktop Mac — where the property is absent — keeps working.
+    check(PowerState.lidIsClosed() != true || registry == true,
+          "never reports a closed lid the registry does not confirm")
+
+    // Two reads in a row must agree; the daemon calls this every second and a
+    // flapping answer would hand the fans back and forth.
+    check(PowerState.lidIsClosed() == reported, "stable across consecutive reads")
+}
+
 // MARK: - Summary
 
 print("\n\(checks - failures)/\(checks) checks passed")

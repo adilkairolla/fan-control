@@ -52,6 +52,19 @@ final class Daemon {
     private let stateLock = NSLock()
     private var timer: DispatchSourceTimer?
 
+    /// The control loop's serial queue. Sleep and wake hop onto it deliberately
+    /// — see `prepareForSleep()`.
+    private let tickQueue = DispatchQueue(label: "fand.tick")
+
+    /// Why the fans are currently Apple's, or nil if this daemon is driving
+    /// them. Written on `tickQueue`, plus once from `shutdown()` on the way out.
+    private var pausedFor: String?
+
+    /// Set the moment macOS says it is going to sleep, cleared on wake. Kept
+    /// apart from `pausedFor` because the lid can shut and open while the
+    /// machine stays awake, and those two conditions clear at different times.
+    private var asleep = false
+
     private let tickInterval: TimeInterval = 1.0
     private let historyInterval: TimeInterval = 5.0
 
@@ -81,7 +94,7 @@ final class Daemon {
         // A previous instance may have died with fans forced. Reclaim a known state.
         fans.restoreAllToAuto()
 
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "fand.tick"))
+        let timer = DispatchSource.makeTimerSource(queue: tickQueue)
         timer.schedule(deadline: .now() + tickInterval, repeating: tickInterval)
         timer.setEventHandler { [weak self] in self?.tick() }
         timer.resume()
@@ -93,6 +106,11 @@ final class Daemon {
 
     /// Hand the fans back. Safe to call repeatedly and from signal context.
     func shutdown() {
+        // Latch first, restore second. `cancel()` does not wait for a tick that
+        // is already running, so without the latch that tick can re-force manual
+        // mode after the restore — and there would be no daemon left to undo it.
+        asleep = true
+        pausedFor = "stopping"
         timer?.cancel()
         timer = nil
         fans.restoreAllToAuto()
@@ -109,6 +127,19 @@ final class Daemon {
         let readings = sensors.readAll()
         let summaries = sensors.summarize(readings)
         let maxima = summaries.mapValues(\.max)
+
+        // Asleep, or shut in a bag. Monitoring carries on — whoever is looking
+        // still gets live numbers — but nothing drives the fans.
+        if let reason = pauseReason() {
+            releaseFans(reason: reason)
+            publishStatus(summaries: summaries, now: now)
+            recordHistory(maxima: maxima, now: now)
+            return
+        }
+        if pausedFor != nil {
+            pausedFor = nil
+            log("resuming fan control")
+        }
 
         // Safety keys off the die temperatures that actually govern throttling.
         // Deliberately excludes the `Tf*` hotspot group: it idles in the low 90s
@@ -168,6 +199,40 @@ final class Daemon {
 
         publishStatus(summaries: summaries, now: now)
         recordHistory(maxima: maxima, now: now)
+    }
+
+    /// Why fan control should not be running right now, or nil if it should.
+    ///
+    /// The lid rule is the one users ask for by name: close the laptop and the
+    /// fans go back to macOS. It also covers the wakes nobody sees — macOS wakes
+    /// a sleeping Mac every twenty minutes or so for maintenance, and without
+    /// this the curve would spin the fans up each time, inside a closed bag.
+    ///
+    /// The cost is that a Mac run in clamshell on an external display gets
+    /// Apple's fan control rather than yours. That is the safe direction, and
+    /// the temperatures on screen stay live either way.
+    private func pauseReason() -> String? {
+        if asleep { return "asleep" }
+        if PowerState.lidIsClosed() == true { return "lid closed" }
+        return nil
+    }
+
+    /// Give the fans back to Apple's controller and leave them there.
+    ///
+    /// Re-checks the SMC every tick rather than trusting one write: a hand-back
+    /// that failed once then gets retried, instead of quietly leaving the fans
+    /// forced with nothing watching them.
+    private func releaseFans(reason: String) {
+        if fans.isUnderManualControl() { fans.restoreAllToAuto() }
+        for i in 0..<fans.fanCount {
+            lastCommanded[i] = nil
+            lastSafetyEngaged[i] = false
+            evaluators[i].reset()
+        }
+        if pausedFor != reason {
+            pausedFor = reason
+            log("\(reason) — fans handed back to macOS")
+        }
     }
 
     private func publishStatus(summaries: [SensorGroup: GroupSummary], now: Date) {
@@ -372,6 +437,34 @@ final class Daemon {
 
     // MARK: - Power notifications
 
+    /// Hand the fans back before letting the machine sleep, and make it stick.
+    ///
+    /// Synchronously, and on `tickQueue`, both on purpose. macOS spends about
+    /// five seconds between this notification and the SoC actually going down —
+    /// measured on this hardware, consistently, across every clamshell sleep in
+    /// the log. The control loop runs at 1 Hz and re-arms manual mode on every
+    /// pass, so a hand-back that merely wrote the SMC and returned was undone
+    /// five times over before the machine went under. It then slept with the
+    /// fans pinned to the curve's last target, and the SMC has no deadman: they
+    /// stayed spinning in the bag until something woke the Mac up again.
+    ///
+    /// Hopping onto the control loop's own queue is what closes it. A tick that
+    /// is already running finishes first, this runs next, and no further tick
+    /// starts while `asleep` is set.
+    private func prepareForSleep() {
+        tickQueue.sync {
+            asleep = true
+            releaseFans(reason: "asleep")
+        }
+    }
+
+    private func wakeUp() {
+        tickQueue.sync {
+            asleep = false
+            for evaluator in evaluators { evaluator.reset() }
+        }
+    }
+
     private func registerForPowerNotifications() {
         var notifyPort: IONotificationPortRef?
         var notifierObject: io_object_t = 0
@@ -379,17 +472,16 @@ final class Daemon {
         let callback: IOServiceInterestCallback = { _, _, messageType, argument in
             switch messageType {
             case PowerMessage.systemWillSleep:
-                // Never sleep with the fans still forced — a machine that wakes
-                // into a stale manual target is exactly the failure we designed
-                // the restore path around.
-                gDaemon?.fans.restoreAllToAuto()
-                log("sleeping — fans handed back to auto")
+                // Hand the fans back *and latch them*, then allow the sleep.
+                // Order matters: once IOAllowPowerChange returns there is no
+                // guarantee this process runs again before the machine is down.
+                gDaemon?.prepareForSleep()
                 IOAllowPowerChange(gRootPort, Int(bitPattern: argument))
             case PowerMessage.canSystemSleep:
                 IOAllowPowerChange(gRootPort, Int(bitPattern: argument))
             case PowerMessage.systemHasPoweredOn:
-                log("woke — resuming control loop")
-                for evaluator in gDaemon?.evaluators ?? [] { evaluator.reset() }
+                log("woke")
+                gDaemon?.wakeUp()
             default:
                 break
             }
