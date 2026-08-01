@@ -187,8 +187,10 @@ cat > "$AGENT_PLIST" <<PLIST
 </plist>
 PLIST
 
+_started_by_launchd=0
 launchctl bootout "gui/$(id -u)/${AGENT_LABEL}" 2>/dev/null || true
 if launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null; then
+    _started_by_launchd=1
     ok "starts at login  ·  undo with make down"
 else
     # Not fatal: the app is installed and will be launched below either way.
@@ -197,8 +199,15 @@ else
 fi
 
 # ------------------------------------------------------------- launch
+#
+# `RunAtLoad` means bootstrap has already started it. Calling `open` as well
+# raced LaunchServices — which had not yet registered the process launchd just
+# spawned — and won, leaving two identical menu bar items. The app refuses to
+# start twice now regardless, but the launcher should not be asking it to.
 
-open "$APP_DST"
+if (( ! _started_by_launchd )); then
+    open "$APP_DST"
+fi
 _running=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
     if pgrep -x FanControl >/dev/null 2>&1; then _running=1; break; fi

@@ -477,6 +477,34 @@ suite("Fan key resolution") {
     }
 }
 
+// MARK: - Single instance
+//
+// `make up` bootstrapped the LaunchAgent (RunAtLoad) and then also ran `open`,
+// which raced LaunchServices and started a second copy — two identical menu bar
+// items. flock is what makes that impossible rather than merely unlikely.
+
+suite("Single instance guard") {
+    let path = NSTemporaryDirectory() + "fancontrol-test-\(getpid())/app.lock"
+    defer { try? FileManager.default.removeItem(atPath: (path as NSString).deletingLastPathComponent) }
+
+    // Two open() calls make two file descriptions even inside one process, and
+    // flock conflicts between descriptions — so this is a faithful stand-in for
+    // two processes starting at once.
+    var held = SingleInstance.claim(at: path)
+    check(held != nil, "first claim takes the lock")
+    check(SingleInstance.claim(at: path) == nil, "second claim is refused while it is held")
+
+    check(FileManager.default.fileExists(atPath: path), "lock file created, parents and all")
+
+    // Releasing has to actually release, or a crashed app would lock the user
+    // out of their own menu bar until a reboot.
+    held = nil
+    check(SingleInstance.claim(at: path) != nil, "released once the token goes away")
+
+    check(SingleInstance.appLockPath.hasSuffix("/Library/Application Support/FanControl/app.lock"),
+          "app locks under the per-user support directory")
+}
+
 // MARK: - Summary
 
 print("\n\(checks - failures)/\(checks) checks passed")

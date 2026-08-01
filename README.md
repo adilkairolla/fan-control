@@ -226,9 +226,10 @@ make test
 ```
 
 Command Line Tools ship neither XCTest nor swift-testing, so the suite is a
-plain executable. 98 checks covering curve interpolation, the safety floor,
+plain executable. 103 checks covering curve interpolation, the safety floor,
 hysteresis and slew limiting, profile stability, IPC round-trips, lid
-detection, fan key resolution, and live unprivileged SMC reads.
+detection, fan key resolution, the single-instance lock, and live unprivileged
+SMC reads.
 
 ## License
 
